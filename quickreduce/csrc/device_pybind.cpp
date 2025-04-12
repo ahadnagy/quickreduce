@@ -10,4 +10,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("get_comm_handle", &get_comm_handle);
     m.def("set_comm_handles", &set_comm_handles);
     m.def("allreduce", &allreduce);
+    m.def("fused_gemm_ar", &fused_gemm_ar);
 }

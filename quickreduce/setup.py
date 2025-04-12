@@ -19,11 +19,11 @@ extra_compile_args = {
         "-O3", "-std=c++17",
         "-Wno-unused-result", "-Wno-undefined-internal",
         "-mllvm", "-amdgpu-early-inline-all=true"
-    ] + rocm_arch + arch_flags,
+    ] + rocm_arch + arch_flags + ['-U__HIP_NO_HALF_CONVERSIONS__', '-U__HIP_NO_HALF_OPERATORS__'],
 }
 
 sources = [
-    str(project_root / "csrc/quickreduce.hip"),
+    str(project_root / "csrc/quickreduce.cu"),
     str(project_root / "quickreduce/csrc/device.cpp"),
     str(project_root / "quickreduce/csrc/device_pybind.cpp"),
 ]

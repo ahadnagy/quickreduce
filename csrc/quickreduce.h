@@ -3,7 +3,7 @@
 #include <vector>
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
-
+#include <torch/all.h>
 
 #define HIP_CHECK(err)                                                              \
     do {                                                                            \
@@ -65,6 +65,8 @@ struct DeviceComms {
     hipIpcMemHandle_t const get_handle() { return buffer_ipc_handle; }
     void open_ipc_handles(std::vector<hipIpcMemHandle_t> const& ipc_handles);
     void allreduce(int profile, hipStream_t stream, half const* A, half* B, int N);
+    void fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, torch::Tensor& D, torch::Tensor& scale_tensor,
+        size_t b_lanes, size_t split_k, hipStream_t stream);
 };
 
 }  // namespace quickreduce
