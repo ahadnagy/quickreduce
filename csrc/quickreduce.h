@@ -43,6 +43,7 @@ struct DeviceComms {
 
     bool initialized = false;
     int flag_color = 1;
+    int* dflag_color;
     int world_size;
     int rank;
 
@@ -66,7 +67,7 @@ struct DeviceComms {
     void open_ipc_handles(std::vector<hipIpcMemHandle_t> const& ipc_handles);
     void allreduce(int profile, hipStream_t stream, half const* A, half* B, int N);
     void fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, torch::Tensor& D, torch::Tensor& scale_tensor,
-        size_t b_lanes, size_t split_k, hipStream_t stream);
+        size_t b_lanes, size_t split_k, hipStream_t stream, bool capturing);
 };
 
 }  // namespace quickreduce

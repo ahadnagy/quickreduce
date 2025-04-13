@@ -103,7 +103,7 @@ def skinny_gemm_and_ar_pytorch(a, b, d, scale):
                 scale_tensor=scale,
                 output=d,
                 split_k=1,
-                b_lanes=5,
+                b_lanes=4,
             )
     dist.all_reduce(d, op=dist.ReduceOp.SUM)
     torch.cuda.synchronize()
@@ -162,29 +162,55 @@ def run_allreduce_comparison(rank, world_size):
     b_lanes = 4
     split_k = 1
     skinny_a, b, scale_tensor, out = generate_skinny_gemm_zeros(m, n, k, seed=0)
-    # QuickReduce allreduce
     qr_out = out.clone()
-    qr_out.fill_(rank)
+    #qr_out.fill_(rank)
     print("Custom run")
     qr_result = custom.fused_gemm_ar(skinny_a, b, qr_out, scale_tensor, b_lanes, split_k)
     #torch.set_printoptions(profile="full")
 
     print(f"Custom run finished: {qr_out}")
-    print(f"Rank {rank} allthesame: {qr_out.min() == qr_out.max()}")
-    
-    # PyTorch allreduce for comparison
-    #torch_result = out.clone()
-    #skinny_gemm_and_ar_pytorch(skinny_a, b, torch_result, scale_tensor)
+
+    torch_result = out.clone()
+    skinny_gemm_and_ar_pytorch(skinny_a, b, torch_result, scale_tensor)
     
     #print(qr_out)
     
     # Verify results match
-    # if not torch.allclose(qr_out, torch_result, rtol=2.5e-1):
-    #     print(f"Rank {rank}: QuickReduce (profile {profile}) result doesn't match PyTorch")
-    #     print(f"QR: {qr_out[:10].cpu().numpy()}...")
-    #     print(f"PyTorch: {torch_result[:10].cpu().numpy()}...")
-    # else:
-    #     print(f"Rank {rank}: QuickReduce profile {profile} matches PyTorch allreduce")
+    #if not torch.allclose(qr_out, torch_result, rtol=2.5e-1):
+    #    print(f"Rank {rank}: QuickReduce (profile {profile}) result doesn't match PyTorch")
+    #    print(f"QR: {qr_out[:10].cpu().numpy()}...")
+    #    print(f"PyTorch: {torch_result[:10].cpu().numpy()}...")
+    #else:
+    #    print(f"Rank {rank}: QuickReduce profile {profile} matches PyTorch allreduce")
+        
+    torch.testing.assert_close(qr_out, torch_result, 
+                                rtol=2.5e-5, atol=20)
+    
+    
+    skinny_a, b, scale_tensor, out = generate_random_skinny_gemm_data(m, n, k, seed=0)
+    qr_out = out.clone()
+    #qr_out.fill_(rank)
+    print("Custom run")
+    qr_result = custom.fused_gemm_ar(skinny_a, b, qr_out, scale_tensor, b_lanes, split_k)
+    #torch.set_printoptions(profile="full")
+
+    print(f"Custom run finished: {qr_out}")
+
+    torch_result = out.clone()
+    skinny_gemm_and_ar_pytorch(skinny_a, b, torch_result, scale_tensor)
+    
+    #print(qr_out)
+    
+    # Verify results match
+    #if not torch.allclose(qr_out, torch_result, rtol=2.5e-1):
+    #    print(f"Rank {rank}: QuickReduce (profile {profile}) result doesn't match PyTorch")
+    #    print(f"QR: {qr_out[:10].cpu().numpy()}...")
+    #    print(f"PyTorch: {torch_result[:10].cpu().numpy()}...")
+    #else:
+    #    print(f"Rank {rank}: QuickReduce profile {profile} matches PyTorch allreduce")
+        
+    torch.testing.assert_close(qr_out, torch_result, 
+                                rtol=2.5e-5, atol=20)
     
     # Verify correctness (sum of ones should equal world_size)
     #expected = torch.ones(1024, dtype=torch.float16).cuda() * world_size

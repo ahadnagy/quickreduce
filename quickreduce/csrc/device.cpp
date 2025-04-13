@@ -64,7 +64,7 @@ torch::Tensor allreduce(int profile, torch::Tensor const& A) {
 }
 
 void fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, torch::Tensor& D, torch::Tensor& scale_tensor,
-                            size_t b_lanes, size_t split_k) {
+                            size_t b_lanes, size_t split_k, bool capturing) {
     device()->comms.fused_gemm_ar(
         A,
         B,
@@ -72,7 +72,8 @@ void fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, torch::Tensor
         scale_tensor,
         b_lanes,
         split_k,
-        device()->stream
+        device()->stream,
+        capturing
     );
     //device()->comms.allreduce(
     //    profile,

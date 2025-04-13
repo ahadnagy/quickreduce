@@ -6,13 +6,13 @@ using namespace quickreduce;
 
 #define launch_tsr(BL, AP, BP, C, COMM, QS)                                                                                  \
     block.x = WARPSIZE * (AP + BP + C) + COMM;                                                                                \
-    _tsr_kernel<BL, AP, BP, C, COMM, QS><<<grid, block, 0, stream>>>(A_, B_, D_, scale_tensor_, m, n, k, b_stride, split_k, rank, world_size, dbuffer_list, data_offset); \
+    _tsr_kernel<BL, AP, BP, C, COMM, QS><<<grid, block, 0, stream>>>(A_, B_, D_, scale_tensor_, m, n, k, b_stride, split_k, rank, world_size, dbuffer_list, data_offset, capturing); \
     break;
 
 template <int B_LANES, int A_PRODUCERS, int B_PRODUCERS, int CONSUMERS, int COMMS, int QSIZE>
 void __global__ _tsr_kernel(const fp8* __restrict__ A, const fp8* __restrict__ B, half* __restrict__ D,
                             const float* scale_tensor, const int m, const int n, const int k, const int b_stride,
-                            const int split_k, const int rank, const int world_size, uint8_t** __restrict__ comms_buffer_list, long const data_offset) {
+                            const int split_k, const int rank, const int world_size, uint8_t** __restrict__ comms_buffer_list, long const data_offset, bool capturing) {
     // Initialize shared queue
     __shared__ int queue[2 * B_LANES * QSIZE];
     if (threadIdx.x < 2 * B_LANES * QSIZE) {
@@ -120,7 +120,8 @@ void __global__ _tsr_kernel(const fp8* __restrict__ A, const fp8* __restrict__ B
                     + rank * kRankTileSize 
                     + tile_offset 
                     + a * sizeof(int32x4_t));
-                codec.send(send_buffer, &tA[a * kRankAtoms]);
+                if(!capturing)
+                    codec.send(send_buffer, &tA[a * kRankAtoms]);
             }
         }
         __syncthreads();
