@@ -131,12 +131,5 @@ void skinny_gemm(torch::Tensor const& A, torch::Tensor const& B, torch::Tensor& 
             launch_tsr(5, 2, 6, 2, 8, 2);
         default:
             break;
-    }
-
-    using LineCodec = quickreduce::TwoshotFP16LineCodec<8>;                                           
-    using AllReduceKernel = quickreduce::AllReduceTwoshot<LineCodec>;                    
-    //hipLaunchKernelGGL((allreduce_prototype<AllReduceKernel>),              
-    //    dim3(grid), dim3(kBlock), 0, stream,                                
-    //    A, B, N, num_blocks, world_size, rank, dbuffer_list,                
-    //    data_offset, flag_color);                                           
+    }                                         
 }

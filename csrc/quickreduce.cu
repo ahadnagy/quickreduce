@@ -198,12 +198,23 @@ void DeviceComms::fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, 
                 break;
         }
 
+        if (world_size != 2 && world_size != 4 && world_size != 8) {
+            throw std::runtime_error("All Reduce not supported for world_size = " + std::to_string(world_size));
+        }
+    
+        // Configuration.
+        long msg_size = D.numel() * sizeof(half);
+        int num_blocks = divceil(msg_size, kTileSize);
+        int ar_grid = min(304 * 4, num_blocks);
+
         using LineCodec = TwoshotFP16LineCodec<8>;
         using AllReduceKernel = AllReduceTwoshot<LineCodec>;
         hipLaunchKernelGGL((allreduce_prototype<AllReduceKernel>),
-            dim3(grid), dim3(kBlock), 0, stream,
-            A, B, N, num_blocks, world_size, rank, dbuffer_list,
+            dim3(ar_grid), dim3(kBlock), 0, stream,
+            D_, D_, D.numel(), num_blocks, world_size, rank, dbuffer_list,
             data_offset, flag_color);
+
+        flag_color++;
 
         return;
     }

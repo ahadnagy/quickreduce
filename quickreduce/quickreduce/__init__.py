@@ -6,4 +6,5 @@ from .device import (
     get_comm_handle,
     set_comm_handles,
     allreduce,
+    fused_gemm_ar,
 )
