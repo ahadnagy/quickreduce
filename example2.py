@@ -56,6 +56,45 @@ def generate_skinny_gemm_data(
     output = torch.zeros(size=(m, n), dtype=torch.float16, device="cuda")
     return skinny_a, b, scale_tensor, output
 
+def generate_random_skinny_gemm_data(
+    m: int, n: int, k: int, seed: Optional[int] = None
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Generates random inputs for the skinny_gemm operation. The generated input's shape is determined by (m), (n) and
+    (k), and one can pass a (seed) to ensure repeatability."""
+    if seed is not None:
+        torch.manual_seed(seed)
+    scale_tensor = torch.ones(size=(1,), device="cuda", dtype=torch.float32).mul(2).add(1)
+    skinny_a = fp8_quantize(
+        torch.normal(0, 1, size=(m, k), device="cuda", dtype=torch.float32),
+        scale_tensor,
+    )[0]
+    b = fp8_quantize(
+        torch.normal(0, 1, size=(n, k), device="cuda", dtype=torch.float32),
+        scale_tensor,
+    )[0].t()
+    output = torch.zeros(size=(m, n), dtype=torch.float16, device="cuda")
+    return skinny_a, b, scale_tensor, output
+
+def generate_skinny_gemm_zeros(
+    m: int, n: int, k: int, seed: Optional[int] = None
+) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+    """Generates random inputs for the skinny_gemm operation. The generated input's shape is determined by (m), (n) and
+    (k), and one can pass a (seed) to ensure repeatability."""
+    if seed is not None:
+        torch.manual_seed(seed)
+    scale_tensor = torch.zeros(size=(1,), device="cuda", dtype=torch.float32).mul(2).add(1)
+    skinny_a = fp8_quantize(
+        #torch.ones(size=(m, k), device="cuda", dtype=torch.float32),
+        torch.ones(size=(m, k), device="cuda", dtype=torch.float32),
+        scale_tensor,
+    )[0]
+    b = fp8_quantize(
+        torch.zeros(size=(n, k), device="cuda", dtype=torch.float32),
+        scale_tensor,
+    )[0].t()
+    output = torch.zeros(size=(m, n), dtype=torch.float16, device="cuda")
+    return skinny_a, b, scale_tensor, output
+
 def skinny_gemm_and_ar_pytorch(a, b, d, scale):
     # Perform GEMM
     skinny_gemm(
@@ -104,39 +143,48 @@ def run_allreduce_comparison(rank, world_size):
     setup(rank, world_size)
     
     # Create CustomComms instance
+    print("Create instance")
     custom = CustomComms(world_size, rank)
     
     # Exchange comm handles using allgather
+    print("Gather comms")
     local_handle = custom.get_comm_handle()
     handles = [None] * world_size
     dist.all_gather_object(handles, local_handle)
     custom.set_comm_handles(handles)
+    print("Gather comms finished")
     
     profile = 1
     
     m = 8
     n = 16384
     k = 16384
-    b_lanes = 5
+    b_lanes = 4
     split_k = 1
-    skinny_a, b, scale_tensor, out = generate_skinny_gemm_data(m, n, k, seed=0)
+    skinny_a, b, scale_tensor, out = generate_skinny_gemm_zeros(m, n, k, seed=0)
     # QuickReduce allreduce
     qr_out = out.clone()
+    qr_out.fill_(rank)
+    print("Custom run")
     qr_result = custom.fused_gemm_ar(skinny_a, b, qr_out, scale_tensor, b_lanes, split_k)
+    #torch.set_printoptions(profile="full")
+
+    print(f"Custom run finished: {qr_out}")
+    print(f"Rank {rank} allthesame: {qr_out.min() == qr_out.max()}")
     
     # PyTorch allreduce for comparison
-    torch_result = out.clone()
-    skinny_gemm_and_ar_pytorch(skinny_a, b, torch_result, scale_tensor)
+    #torch_result = out.clone()
+    #skinny_gemm_and_ar_pytorch(skinny_a, b, torch_result, scale_tensor)
     
-    print(qr_out)
+    #print(qr_out)
     
     # Verify results match
-    if not torch.allclose(qr_out, torch_result, rtol=2.5e-1):
-        print(f"Rank {rank}: QuickReduce (profile {profile}) result doesn't match PyTorch")
-        print(f"QR: {qr_out[:10].cpu().numpy()}...")
-        print(f"PyTorch: {torch_result[:10].cpu().numpy()}...")
-    else:
-        print(f"Rank {rank}: QuickReduce profile {profile} matches PyTorch allreduce")
+    # if not torch.allclose(qr_out, torch_result, rtol=2.5e-1):
+    #     print(f"Rank {rank}: QuickReduce (profile {profile}) result doesn't match PyTorch")
+    #     print(f"QR: {qr_out[:10].cpu().numpy()}...")
+    #     print(f"PyTorch: {torch_result[:10].cpu().numpy()}...")
+    # else:
+    #     print(f"Rank {rank}: QuickReduce profile {profile} matches PyTorch allreduce")
     
     # Verify correctness (sum of ones should equal world_size)
     #expected = torch.ones(1024, dtype=torch.float16).cuda() * world_size

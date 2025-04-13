@@ -207,8 +207,15 @@ void DeviceComms::fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, 
         int num_blocks = divceil(msg_size, kTileSize);
         int ar_grid = min(304 * 4, num_blocks);
 
+        // using LineCodec = TwoshotFP16LineCodec<8>;
+        // using AllReduceKernel = AllReduceTwoshot<LineCodec>;
+        // hipLaunchKernelGGL((allreduce_prototype<AllReduceKernel>),
+        //     dim3(ar_grid), dim3(kBlock), 0, stream,
+        //     D_, D_, D.numel(), num_blocks, world_size, rank, dbuffer_list,
+        //     data_offset, flag_color);
+
         using LineCodec = TwoshotFP16LineCodec<8>;
-        using AllReduceKernel = AllReduceTwoshot<LineCodec>;
+        using AllReduceKernel = ReduceGather<LineCodec>;
         hipLaunchKernelGGL((allreduce_prototype<AllReduceKernel>),
             dim3(ar_grid), dim3(kBlock), 0, stream,
             D_, D_, D.numel(), num_blocks, world_size, rank, dbuffer_list,

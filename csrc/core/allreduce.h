@@ -1001,4 +1001,180 @@ struct AllReduceTwoshot {
     }
 };
 
+template<int world_size>
+struct ReduceGatherSkinnyCodec {
+    /*
+        Default FP16 line codec for Twoshot collectives.
+        No actual compression is involved.
+    */
+
+    static int constexpr kAtoms = 8;
+    static int constexpr kAtomStride = 256;
+    static int constexpr kWorldSize = world_size;
+
+    // Codec tile size process by this workgroup.
+    // Each thread processes atoms of fp16x8_t (16B).
+    static int constexpr kRankAtoms = kAtoms / kWorldSize;
+    static int constexpr kRankTileSize = 256 * kRankAtoms * sizeof(int32x4_t);
+
+    // Total tile size for the collective communication.
+    static int constexpr kTileSize = kRankTileSize * kWorldSize;
+
+    int const thread;
+    int const rank;
+
+    __device_inline__
+    ReduceGatherSkinnyCodec(int thread, int rank) : thread(thread), rank(rank) {
+        static_assert(kRankTileSize % 16 == 0, "kRankTileSize must be 16B aligned.");
+    }
+
+    __device_inline__
+    void send(int32x4_t* __restrict__ send_buffer, int32x4_t const* __restrict__ data) {
+        for (int i = 0; i < kRankAtoms; i++) {
+            __builtin_nontemporal_store(data[i], send_buffer + thread);
+            send_buffer += kAtomStride;
+        }
+    }
+};
+
+template <class LineCodec>
+struct ReduceGather {
+    // Fixed magic implementation.
+    // We will use a workgroup of 256 threads (standard kBlock) across 8 atoms of work.
+    static int constexpr kAtoms = 8;
+
+    // Size and atom stride of source/destination data that the workgroup will process.
+    static int constexpr kTileSize = 256 * kAtoms * sizeof(int32x4_t);
+    static int constexpr kAtomStride = 256;
+
+    static int constexpr kWorldSize = LineCodec::kWorldSize;
+
+    __device__
+    static void run(
+        half const* __restrict__ A,                 // input
+        half* __restrict__ B,                       // output
+        int const N,                                // number of elements
+        int const block,                            // block index
+        int const num_blocks,                       // number of blocks
+        int const world_size,                       // unused - only kept around for API consistency
+        int const rank,                             // rank index
+        uint8_t** __restrict__ buffer_list,         // communication buffers
+        long const data_offset,                     // offset to start of the data buffer
+        int flag_color
+    ) {
+
+        // Topology
+        int thread = threadIdx.x + threadIdx.y * kWavefront;
+        uint8_t* rank_buffer = buffer_list[rank];
+
+        LineCodec codec(thread, rank);
+
+        // --------------------------------------------------------
+        // Read A into registers
+        int32x4_t tA[kAtoms];
+
+        BufferResource src_buffer(const_cast<half*>(A), N * sizeof(half));
+        int src_offset = block * kTileSize + thread * sizeof(int32x4_t);
+
+        for (int i = 0; i < kAtoms; i++) {
+            //tA[i] = buffer_load_dwordx4(src_buffer.descriptor, src_offset, 0, 0);
+            src_offset += kAtomStride * sizeof(int32x4_t);
+        }
+
+        // --------------------------------------------------------
+        // Phase-1A: Write segment data into the communication buffer of the target rank responsible for this segment.
+        long comm_data0_offset = data_offset + block * LineCodec::kTileSize;
+        long comm_data1_offset = num_blocks * LineCodec::kTileSize + comm_data0_offset;
+
+        long comm_flags0_offset = block * (kWorldSize * sizeof(int));
+        long comm_flags1_offset = num_blocks * (kWorldSize * sizeof(int)) + comm_flags0_offset;
+
+        for (int r = 0; r < kWorldSize; r++) {
+            int32x4_t* send_buffer = reinterpret_cast<int32x4_t*>(buffer_list[r] + comm_data0_offset + rank * LineCodec::kRankTileSize);
+            //codec.send(send_buffer, &tA[r * LineCodec::kRankAtoms]);
+        }
+
+         __syncthreads();
+        if (thread < kWorldSize) {
+            int r = thread;
+            int* flag_ptr = reinterpret_cast<int*>(buffer_list[r] + comm_flags0_offset + rank * sizeof(int));
+            __atomic_store_n(flag_ptr, flag_color, __ATOMIC_RELEASE);
+        }
+
+        // --------------------------------------------------------
+        // Phase-1B: Reduce the segment data from the communication buffers.
+        int32x4_t tR[LineCodec::kRankAtoms] = {};
+        {
+            // Read the data from the communication buffer.
+            int32x4_t* recv_buffer = reinterpret_cast<int32x4_t*>(rank_buffer + comm_data0_offset);
+            int* flag_ptr = reinterpret_cast<int*>(rank_buffer + comm_flags0_offset);
+
+            for (int r = 0; r < kWorldSize; r++) {
+                // Wait for the flags to be set.
+                if (thread == 0) {
+                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != flag_color) {}
+                }
+                __syncthreads();
+
+                // note: we reuse tA as temp buffer here
+                codec.recv(&recv_buffer, tA);
+
+                for (int i = 0; i < LineCodec::kRankAtoms; i++) {
+                    int32x4_t& tA_fragment = tA[i];
+                    int32x4_t& tR_fragment = tR[i];
+
+                    asm volatile("v_pk_add_f16 %0, %1, %2" : "=v"(tR_fragment[0]) : "v"(tR_fragment[0]), "v"(tA_fragment[0]));
+                    asm volatile("v_pk_add_f16 %0, %1, %2" : "=v"(tR_fragment[1]) : "v"(tR_fragment[1]), "v"(tA_fragment[1]));
+                    asm volatile("v_pk_add_f16 %0, %1, %2" : "=v"(tR_fragment[2]) : "v"(tR_fragment[2]), "v"(tA_fragment[2]));
+                    asm volatile("v_pk_add_f16 %0, %1, %2" : "=v"(tR_fragment[3]) : "v"(tR_fragment[3]), "v"(tA_fragment[3]));
+                }
+            }
+        }
+
+        // --------------------------------------------------------
+        // Phase-2: Write the reduced segment to every other rank
+        // This is basically an all-gather.
+        for (int r = 0; r < kWorldSize; r++) {
+            int32x4_t* send_buffer = reinterpret_cast<int32x4_t*>(buffer_list[r] + comm_data1_offset + rank * LineCodec::kRankTileSize);
+            codec.send(send_buffer, tR);
+        }
+
+        __syncthreads();
+        if (thread < kWorldSize) {
+            int r = thread;
+            int* flag_ptr = reinterpret_cast<int*>(buffer_list[r] + comm_flags1_offset + rank * sizeof(int));
+            __atomic_store_n(flag_ptr, flag_color, __ATOMIC_RELEASE);
+        }
+
+        // --------------------------------------------------------
+        // Phase-2: Read the gather segments from the rank's communication buffer.
+        {
+            // Read the data from the communication buffer.
+            int32x4_t* recv_buffer = reinterpret_cast<int32x4_t*>(rank_buffer + comm_data1_offset);
+            int* flag_ptr = reinterpret_cast<int*>(rank_buffer + comm_flags1_offset);
+
+            for (int r = 0; r < kWorldSize; r++) {
+                // Wait for the flags to be set.
+                if (thread == 0) {
+                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != flag_color) {}
+                }
+                __syncthreads();
+
+                // Gather all reduced and final rank segments into tA.
+                codec.recv(&recv_buffer, &tA[r * LineCodec::kRankAtoms]);
+            }
+        }
+
+        // --------------------------------------------------------
+        // Write the result to B.
+        BufferResource dst_buffer(B, N * sizeof(half));
+        int dst_offset = block * kTileSize + thread * sizeof(int32x4_t);
+
+        for (int i = 0; i < kAtoms; i++) {
+            buffer_store_dwordx4(tA[i], dst_buffer.descriptor, dst_offset, 0, 0);
+            dst_offset += kAtomStride * sizeof(int32x4_t);
+        }
+    }
+};
+
 }  // namespace quickreduce
