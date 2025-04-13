@@ -32,7 +32,7 @@ struct AllReduceOneshot {
         int const rank,                             // this rank's index
         uint8_t** __restrict__ buffer_list,         // communication buffers
         long const data_offset,                     // offset to start of the data buffer
-        int* flag_color,                              // Flag color for the network barrier
+        int flag_color,                              // Flag color for the network barrier
         bool capturing
     ) {
 
@@ -67,7 +67,7 @@ struct AllReduceOneshot {
         if (thread < world_size) {
             int r = thread;
             int* flag_ptr = reinterpret_cast<int*>(buffer_list[r] + comm_flags_offset);
-            while (__atomic_load_n(flag_ptr, __ATOMIC_RELAXED) != *flag_color - 1) {}
+            while (__atomic_load_n(flag_ptr, __ATOMIC_RELAXED) != flag_color - 1) {}
         }
         __syncthreads();
 
@@ -84,7 +84,7 @@ struct AllReduceOneshot {
         if (thread < world_size) {
             int r = thread;
             int* flag_ptr = reinterpret_cast<int*>(buffer_list[r] + comm_flags_offset);
-            __atomic_store_n(flag_ptr, *flag_color, __ATOMIC_RELEASE);
+            __atomic_store_n(flag_ptr, flag_color, __ATOMIC_RELEASE);
         }
 
         // --------------------------------------------------------
@@ -97,7 +97,7 @@ struct AllReduceOneshot {
             // Wait for the flags to be set.
             int* flag_ptr = reinterpret_cast<int*>(rank_buffer + r * flags_stride + block * sizeof(int));
             if (thread == 0) {
-                while (__atomic_load_n(flag_ptr, __ATOMIC_RELAXED) != *flag_color) {}
+                while (__atomic_load_n(flag_ptr, __ATOMIC_RELAXED) != flag_color) {}
             }
             __syncthreads();
 
@@ -116,7 +116,7 @@ struct AllReduceOneshot {
             // Wait for the flags to be set.
             int* flag_ptr = reinterpret_cast<int*>(rank_buffer + r * flags_stride + block * sizeof(int));
             if (thread == 0) {
-                while (__atomic_load_n(flag_ptr, __ATOMIC_RELAXED) != *flag_color) {}
+                while (__atomic_load_n(flag_ptr, __ATOMIC_RELAXED) != flag_color) {}
             }
             __syncthreads();
 
@@ -145,7 +145,7 @@ struct AllReduceOneshot {
         if (thread < world_size) {
             int r = thread;
             int* flag_ptr = reinterpret_cast<int*>(rank_buffer + r * flags_stride + block * sizeof(int));
-            __atomic_store_n(flag_ptr, *flag_color, __ATOMIC_RELAXED);
+            __atomic_store_n(flag_ptr, flag_color, __ATOMIC_RELAXED);
         }
 
         // --------------------------------------------------------
@@ -885,7 +885,7 @@ struct AllReduceTwoshot {
         int const rank,                             // rank index
         uint8_t** __restrict__ buffer_list,         // communication buffers
         long const data_offset,                     // offset to start of the data buffer
-        int* flag_color,
+        int flag_color,
         bool capturing
     ) {
 
@@ -924,7 +924,7 @@ struct AllReduceTwoshot {
         if (thread < kWorldSize) {
             int r = thread;
             int* flag_ptr = reinterpret_cast<int*>(buffer_list[r] + comm_flags0_offset + rank * sizeof(int));
-            __atomic_store_n(flag_ptr, *flag_color, __ATOMIC_RELEASE);
+            __atomic_store_n(flag_ptr, flag_color, __ATOMIC_RELEASE);
         }
 
         // --------------------------------------------------------
@@ -938,7 +938,7 @@ struct AllReduceTwoshot {
             for (int r = 0; r < kWorldSize; r++) {
                 // Wait for the flags to be set.
                 if (thread == 0) {
-                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != *flag_color) {}
+                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != flag_color) {}
                 }
                 __syncthreads();
 
@@ -969,7 +969,7 @@ struct AllReduceTwoshot {
         if (thread < kWorldSize) {
             int r = thread;
             int* flag_ptr = reinterpret_cast<int*>(buffer_list[r] + comm_flags1_offset + rank * sizeof(int));
-            __atomic_store_n(flag_ptr, *flag_color, __ATOMIC_RELEASE);
+            __atomic_store_n(flag_ptr, flag_color, __ATOMIC_RELEASE);
         }
 
         // --------------------------------------------------------
@@ -982,7 +982,7 @@ struct AllReduceTwoshot {
             for (int r = 0; r < kWorldSize; r++) {
                 // Wait for the flags to be set.
                 if (thread == 0) {
-                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != *flag_color) {}
+                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != flag_color) {}
                 }
                 __syncthreads();
 
@@ -1062,7 +1062,7 @@ struct ReduceGather {
         int const rank,                             // rank index
         uint8_t** __restrict__ buffer_list,         // communication buffers
         long const data_offset,                     // offset to start of the data buffer
-        int* flag_color,
+        int flag_color,
         bool capturing
     ) {
 
@@ -1101,7 +1101,7 @@ struct ReduceGather {
         if (thread < kWorldSize) {
             int r = thread;
             int* flag_ptr = reinterpret_cast<int*>(buffer_list[r] + comm_flags0_offset + rank * sizeof(int));
-            __atomic_store_n(flag_ptr, *flag_color, __ATOMIC_RELEASE);
+            __atomic_store_n(flag_ptr, flag_color, __ATOMIC_RELEASE);
         }
 
         // --------------------------------------------------------
@@ -1115,7 +1115,7 @@ struct ReduceGather {
             for (int r = 0; r < kWorldSize; r++) {
                 // Wait for the flags to be set.
                 if (thread == 0) {
-                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != *flag_color) {}
+                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != flag_color) {}
                 }
                 __syncthreads();
 
@@ -1139,7 +1139,6 @@ struct ReduceGather {
         // This is basically an all-gather.
         for (int r = 0; r < kWorldSize; r++) {
             int32x4_t* send_buffer = reinterpret_cast<int32x4_t*>(buffer_list[r] + comm_data1_offset + rank * LineCodec::kRankTileSize);
-            if(!capturing)
                 codec.send(send_buffer, tR);
         }
 
@@ -1147,7 +1146,7 @@ struct ReduceGather {
         if (thread < kWorldSize) {
             int r = thread;
             int* flag_ptr = reinterpret_cast<int*>(buffer_list[r] + comm_flags1_offset + rank * sizeof(int));
-            __atomic_store_n(flag_ptr, *flag_color, __ATOMIC_RELEASE);
+            __atomic_store_n(flag_ptr, flag_color, __ATOMIC_RELEASE);
         }
 
         // --------------------------------------------------------
@@ -1160,7 +1159,7 @@ struct ReduceGather {
             for (int r = 0; r < kWorldSize; r++) {
                 // Wait for the flags to be set.
                 if (thread == 0) {
-                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != *flag_color) {}
+                    while (__atomic_load_n(&flag_ptr[r], __ATOMIC_RELAXED) != flag_color) {}
                 }
                 __syncthreads();
 

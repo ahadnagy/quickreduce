@@ -83,8 +83,8 @@ void __global__ _tsr_kernel(const fp8* __restrict__ A, const fp8* __restrict__ B
                                                      index, p_state, role_id, n, dropped_rows, dropped_cols, k,
                                                      k_blocks);
         }
-        asm volatile("s_waitcnt vmcnt(0)");
         __syncthreads();
+        __threadfence_block(); 
         size_t tid = threadIdx.x - (A_PRODUCERS + B_PRODUCERS + CONSUMERS) * WARPSIZE;
         if (tid >= 0 && tid < COMMS) {
             using LineCodec = TwoshotFP16LineCodec<8>;
@@ -120,8 +120,7 @@ void __global__ _tsr_kernel(const fp8* __restrict__ A, const fp8* __restrict__ B
                     + rank * kRankTileSize 
                     + tile_offset 
                     + a * sizeof(int32x4_t));
-                if(!capturing)
-                    codec.send(send_buffer, &tA[a * kRankAtoms]);
+                codec.send(send_buffer, &tA[a * kRankAtoms]);
             }
         }
         __syncthreads();

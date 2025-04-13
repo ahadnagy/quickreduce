@@ -27,7 +27,6 @@ class CustomComms:
         qr.set_comm_handles(comm_handles)
 
     def allreduce(self, profile, tensor):
-        #tensor = torch.ones(1024, dtype=torch.float16).cuda()
         result = qr.allreduce(profile, tensor)
         return result
 

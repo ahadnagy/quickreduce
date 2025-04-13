@@ -83,7 +83,7 @@ void DeviceComms::open_ipc_handles(std::vector<hipIpcMemHandle_t> const& ipc_han
 template <typename AllReduceKenel>
 __global__ __quickreduce_launch_bounds__
 static void allreduce_prototype(half const* A, half* B, int N, int num_blocks,
-        int world_size, int rank, uint8_t** dbuffer_list, long data_offset, int *flag_color, bool capturing) {
+        int world_size, int rank, uint8_t** dbuffer_list, long data_offset, int flag_color, bool capturing) {
 
     int block = blockIdx.x;
     int grid = gridDim.x;
@@ -111,7 +111,7 @@ __global__ void incrementKernel(int* d_flag_color) {
         hipLaunchKernelGGL((allreduce_prototype<AllReduceKernel>),              \
             dim3(grid), dim3(kBlock), 0, stream,                                \
             A, B, N, num_blocks, world_size, rank, dbuffer_list,                \
-            data_offset, dflag_color, capturing);                                          \
+            data_offset, flag_color, capturing);                                          \
     }                                                                           \
     else if (world_size == 4) {                                                 \
         using LineCodec = __codec<4>;                                           \
@@ -119,7 +119,7 @@ __global__ void incrementKernel(int* d_flag_color) {
         hipLaunchKernelGGL((allreduce_prototype<AllReduceKernel>),              \
             dim3(grid), dim3(kBlock), 0, stream,                                \
             A, B, N, num_blocks, world_size, rank, dbuffer_list,                \
-            data_offset, dflag_color, capturing);                                          \
+            data_offset, flag_color, capturing);                                          \
     }                                                                           \
     else if (world_size == 8) {                                                 \
         using LineCodec = __codec<8>;                                           \
@@ -127,7 +127,7 @@ __global__ void incrementKernel(int* d_flag_color) {
         hipLaunchKernelGGL((allreduce_prototype<AllReduceKernel>),              \
             dim3(grid), dim3(kBlock), 0, stream,                                \
             A, B, N, num_blocks, world_size, rank, dbuffer_list,                \
-            data_offset, dflag_color, capturing);                                          \
+            data_offset, flag_color, capturing);                                          \
     }
 
 void DeviceComms::allreduce(int profile, hipStream_t stream, half const* A, half* B, int N) {
@@ -146,7 +146,7 @@ void DeviceComms::allreduce(int profile, hipStream_t stream, half const* A, half
     // All reduce dispatch.
     QuickReduceProfile dprofile = static_cast<QuickReduceProfile>(profile);
 
-    cudaMemcpyAsync(dflag_color, &flag_color, sizeof(int), cudaMemcpyHostToDevice, stream);
+    //cudaMemcpyAsync(dflag_color, &flag_color, sizeof(int), cudaMemcpyHostToDevice, stream);
 
     switch (dprofile) {
         case QuickReduceProfile::TWOSHOT_FP8:
@@ -168,8 +168,9 @@ void DeviceComms::allreduce(int profile, hipStream_t stream, half const* A, half
 
     // -------------------------------------------------
     // Rotate the flag color.
-    incrementKernel<<<1, 1, 0, stream>>>(dflag_color);
-    cudaMemcpyAsync(&flag_color, dflag_color, sizeof(int), cudaMemcpyDeviceToHost, stream);
+    flag_color++;
+    //incrementKernel<<<1, 1, 0, stream>>>(dflag_color);
+    //cudaMemcpyAsync(&flag_color, dflag_color, sizeof(int), cudaMemcpyDeviceToHost, stream);
 }
 
 void DeviceComms::fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, torch::Tensor& D, torch::Tensor& scale_tensor,
@@ -227,16 +228,17 @@ void DeviceComms::fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, 
         // hipLaunchKernelGGL((allreduce_prototype<AllReduceKernel>),
         //     dim3(ar_grid), dim3(kBlock), 0, stream,
         //     D_, D_, D.numel(), num_blocks, world_size, rank, dbuffer_list,
-        //     data_offset, flag_color);
+        //     data_offset, dflag_color, capturing);
 
-        cudaMemcpyAsync(dflag_color, &flag_color, sizeof(int), cudaMemcpyHostToDevice, stream);
+        //cudaMemcpyAsync(dflag_color, &flag_color, sizeof(int), cudaMemcpyHostToDevice, stream);
         using LineCodec = TwoshotFP16LineCodec<8>;
         using AllReduceKernel = ReduceGather<LineCodec>;
         allreduce_prototype<AllReduceKernel><<<dim3(ar_grid), dim3(kBlock), 0, stream>>>(D_, D_, D.numel(), num_blocks, world_size, rank, dbuffer_list,
-        data_offset, dflag_color, capturing);
+        data_offset, flag_color, capturing);
 
-        incrementKernel<<<1, 1, 0, stream>>>(dflag_color);
-        cudaMemcpyAsync(&flag_color, dflag_color, sizeof(int), cudaMemcpyDeviceToHost, stream);
+        //incrementKernel<<<1, 1, 0, stream>>>(dflag_color);
+        //cudaMemcpyAsync(&flag_color, dflag_color, sizeof(int), cudaMemcpyDeviceToHost, stream);
+        flag_color++;
         return;
     }
 

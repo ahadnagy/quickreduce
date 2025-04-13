@@ -52,19 +52,19 @@ void set_comm_handles(std::vector<comm_handle> const& comm_handles) {
     device()->comms.open_ipc_handles(ipc_handles);
 }
 
-torch::Tensor allreduce(int profile, torch::Tensor const& A) {
-    torch::Tensor C = torch::empty_like(A);
+void allreduce(int profile, torch::Tensor const& A) {
+    auto stream = at::cuda::getCurrentCUDAStream();
     device()->comms.allreduce(
         profile,
-        device()->stream,
+        stream,
         reinterpret_cast<half const*>(A.data_ptr()),
-        reinterpret_cast<half*>(C.data_ptr()),
+        reinterpret_cast<half*>(A.data_ptr()),
         A.numel());
-    return C;
 }
 
 void fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, torch::Tensor& D, torch::Tensor& scale_tensor,
                             size_t b_lanes, size_t split_k, bool capturing) {
+    auto stream = at::cuda::getCurrentCUDAStream();
     device()->comms.fused_gemm_ar(
         A,
         B,
@@ -72,7 +72,7 @@ void fused_gemm_ar(torch::Tensor const& A, torch::Tensor const& B, torch::Tensor
         scale_tensor,
         b_lanes,
         split_k,
-        device()->stream,
+        stream,
         capturing
     );
     //device()->comms.allreduce(
