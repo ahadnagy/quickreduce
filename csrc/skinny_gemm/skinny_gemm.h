@@ -86,49 +86,41 @@ void __global__ _tsr_kernel(const fp8* __restrict__ A, const fp8* __restrict__ B
         asm volatile("s_waitcnt vmcnt(0)");
         __syncthreads();
         size_t tid = threadIdx.x - (A_PRODUCERS + B_PRODUCERS + CONSUMERS) * WARPSIZE;
-        //if (tid >= 0 && tid < COMMS) {
-        if (tid==0) {
+        if (tid >= 0 && tid < COMMS) {
+            using LineCodec = TwoshotFP16LineCodec<8>;
             quickreduce::ReduceGatherSkinnyCodec<8> codec(0, rank);
             quickreduce::BufferResource d_buffer(D, m * n * sizeof(half));
-            for (int row=0; row<8; row++) {
-                static constexpr size_t kAtoms = ((16 * B_LANES) * sizeof(half)) / sizeof(int32x4_t);
-                //printf("kAtoms %zu\n", kAtoms);
-                int32x4_t tA[kAtoms];
-            
-                size_t chunk_bytes = (16 * B_LANES) * sizeof(half);
-                size_t chunk_offset = (curr_n + row * n) * sizeof(half);
-            
-                //------------------------
-                //Load from D to tA
-                //------------------------
-                int src_offset = chunk_offset;
-                for (int i = 0; i < kAtoms; i++) {
-                    tA[i] = buffer_load_dwordx4(d_buffer.descriptor, src_offset, 0, 0);
-                    //tA[i] = {rank, rank, rank, rank};
-                    src_offset += sizeof(int32x4_t);
-                }
+            static constexpr size_t kAtoms = ((16 * B_LANES) * sizeof(half)) / sizeof(int32x4_t);
+            int32x4_t tA[kAtoms];
+        
+            size_t chunk_bytes = (16 * B_LANES) * sizeof(half);
+            size_t chunk_offset = (curr_n + tid * n) * sizeof(half);
+        
+            //------------------------
+            //Load from D to tA
+            //------------------------
+            int src_offset = chunk_offset;
+            for (int i = 0; i < kAtoms; i++) {
+                tA[i] = buffer_load_dwordx4(d_buffer.descriptor, src_offset, 0, 0);
+                src_offset += sizeof(int32x4_t);
+            }
 
-                long block = chunk_offset / ReduceGatherSkinnyCodec<8>::kTileSize;
-                long comm_data0_offset = data_offset + block * ReduceGatherSkinnyCodec<8>::kTileSize;
-                long tile_offset = chunk_offset % ReduceGatherSkinnyCodec<8>::kRankTileSize;
+            long block = chunk_offset / LineCodec::kTileSize;
+            long comm_data0_offset = data_offset + block * LineCodec::kTileSize;
+            long tile_offset = chunk_offset % LineCodec::kRankTileSize;
+            static int constexpr kWorldSize = LineCodec::kWorldSize;
+            static int constexpr kAtomStride = LineCodec::kAtomStride;
+            static int constexpr kRankTileSize = LineCodec::kRankTileSize;
+            static int constexpr kRankAtoms = LineCodec::kRankAtoms;
 
-                static int constexpr kAtomStride = 256;
-
-                //for (int r = 0; r < ReduceGatherSkinnyCodec<8>::kWorldSize; r++) {
-                //    int32x4_t* send_buffer = reinterpret_cast<int32x4_t*>(comms_buffer_list[r] + comm_data0_offset + rank * ReduceGatherSkinnyCodec<8>::kRankTileSize + tile_offset);
-                //    codec.send(send_buffer, &tA[r * ReduceGatherSkinnyCodec<8>::kRankAtoms]);
-                //}
-
-                for (int a = 0; a < kAtoms; a++) {
-                    size_t target_rank = ((chunk_offset + a * sizeof(int32x4_t))/(256 * sizeof(int32x4_t)))%8;
-                    
-                    int32x4_t* send_buffer = reinterpret_cast<int32x4_t*>(comms_buffer_list[target_rank] + comm_data0_offset + rank * ReduceGatherSkinnyCodec<8>::kRankTileSize + tile_offset + a * sizeof(int32x4_t));
-                    //if(rank==0) {
-                    //    printf("Rank %d, tid %d, block %lx, comm_data0_offset %d, tile_offset %d, warptile %d, row %d, chunk_offset: %d, total_effset %d, target rank %d\n", rank, tid, block, comm_data0_offset, tile_offset, warptile, row, chunk_offset, comm_data0_offset + rank * ReduceGatherSkinnyCodec<8>::kRankTileSize + tile_offset, target_rank);
-                    //}
-                    codec.send(send_buffer, &tA[a * ReduceGatherSkinnyCodec<8>::kRankAtoms]);
-                }
-                
+            for (int a = 0; a < kAtoms; a++) {
+                size_t target_rank = ((chunk_offset + a * sizeof(int32x4_t))/(kAtomStride * sizeof(int32x4_t))) % kWorldSize;
+                int32x4_t* send_buffer = reinterpret_cast<int32x4_t*>(comms_buffer_list[target_rank] 
+                    + comm_data0_offset 
+                    + rank * kRankTileSize 
+                    + tile_offset 
+                    + a * sizeof(int32x4_t));
+                codec.send(send_buffer, &tA[a * kRankAtoms]);
             }
         }
         __syncthreads();
