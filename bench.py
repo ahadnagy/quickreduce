@@ -110,6 +110,17 @@ def skinny_gemm_and_ar_pytorch(a, b, d, scale):
             )
     dist.all_reduce(d, op=dist.ReduceOp.SUM)
     torch.cuda.synchronize()
+    
+def skinny_gemm_and_ar_qr(a, b, d, scale):
+    # Perform GEMM
+    skinny_gemm(
+                skinny_a=a,
+                b=b,
+                scale_tensor=scale,
+                output=d,
+            )
+    qr.allreduce(1, d)
+    torch.cuda.synchronize()
 
 def setup(rank, world_size):
     # Initialize PyTorch distributed
@@ -121,7 +132,7 @@ def setup(rank, world_size):
     )
     torch.cuda.set_device(rank)
 
-class CustomComms:
+class fusedComms:
     def __init__(self, world_size, rank):
         self.world_size = world_size
         self.rank = rank
@@ -146,40 +157,40 @@ def benchmark_allreduce(rank, world_size, n_values, results_dict):
     try:
         setup(rank, world_size)
         
-        custom = CustomComms(world_size, rank)
-        local_handle = custom.get_comm_handle()
+        fused = fusedComms(world_size, rank)
+        local_handle = fused.get_comm_handle()
         handles = [None] * world_size
         dist.all_gather_object(handles, local_handle)
-        custom.set_comm_handles(handles)
+        fused.set_comm_handles(handles)
 
         b_lanes = 4
         split_k = 1
         m = 8
         #n = 16384
         k = 16384
-        num_iters = 10
+        num_iters = 10000
 
-        local_results = {"custom": [], "torch": []}
+        local_results = {"fused": [], "torch": [], "qr": []}
 
         for n in n_values:
-            skinny_a, b, scale_tensor, out = generate_skinny_gemm_zeros(m, n, k, seed=0)
+            skinny_a, b, scale_tensor, out = generate_skinny_gemm_zeros(m, n, n, seed=0)
 
-            # WARMUP: Custom
+            # WARMUP: fused
             _ = out.clone()
-            custom.fused_gemm_ar(skinny_a, b, _, scale_tensor, b_lanes, split_k)
+            fused.fused_gemm_ar(skinny_a, b, _, scale_tensor, b_lanes, split_k)
 
-            # Benchmark: Custom
+            # Benchmark: fused
             timings = []
             for _ in range(num_iters):
                 qr_out = out.clone()
                 torch.cuda.synchronize()
                 start = time.perf_counter()
-                custom.fused_gemm_ar(skinny_a, b, qr_out, scale_tensor, b_lanes, split_k)
+                fused.fused_gemm_ar(skinny_a, b, qr_out, scale_tensor, b_lanes, split_k)
                 torch.cuda.synchronize()
                 end = time.perf_counter()
                 timings.append(end - start)
-            avg_custom = sum(timings) / num_iters
-            local_results["custom"].append(avg_custom)
+            avg_fused = sum(timings) / num_iters
+            local_results["fused"].append(avg_fused)
 
             # WARMUP: Torch
             _ = out.clone()
@@ -197,6 +208,23 @@ def benchmark_allreduce(rank, world_size, n_values, results_dict):
                 timings.append(end - start)
             avg_torch = sum(timings) / num_iters
             local_results["torch"].append(avg_torch)
+            
+            # WARMUP: QR
+            _ = out.clone()
+            skinny_gemm_and_ar_pytorch(skinny_a, b, _, scale_tensor)
+
+            # Benchmark: QR
+            timings = []
+            for _ in range(num_iters):
+                torch_out = out.clone()
+                torch.cuda.synchronize()
+                start = time.perf_counter()
+                skinny_gemm_and_ar_qr(skinny_a, b, torch_out, scale_tensor)
+                torch.cuda.synchronize()
+                end = time.perf_counter()
+                timings.append(end - start)
+            avg_torch = sum(timings) / num_iters
+            local_results["qr"].append(avg_torch)
 
             # Validate correctness (only once)
             torch.testing.assert_close(qr_out, torch_out, rtol=2.5e-5, atol=20)
@@ -208,7 +236,7 @@ def benchmark_allreduce(rank, world_size, n_values, results_dict):
 
         if rank == 0:
             # Average results across all ranks
-            for kind in ["custom", "torch"]:
+            for kind in ["fused", "torch", "qr"]:
                 avg_times = [
                     sum(worker[kind][i] for worker in gathered) / world_size
                     for i in range(len(n_values))
@@ -222,7 +250,7 @@ def benchmark_allreduce(rank, world_size, n_values, results_dict):
 
 def main():
     world_size = 8
-    n_values = [1024, 4096, 16384, 32768]
+    n_values = [1024, 2048, 4096, 8192, 16384, 32768]
     manager = mp.Manager()
     results_dict = manager.dict()
 
@@ -233,38 +261,81 @@ def main():
         join=True
     )
 
-    # Plotting (only after spawn joins)
-    custom_times_us = [t * 1e6 for t in results_dict["custom"]]
+    # # Plotting (only after spawn joins)
+    # fused_times_us = [t * 1e6 for t in results_dict["fused"]]
+    # torch_times_us = [t * 1e6 for t in results_dict["torch"]]
+    # qr_times_us = [t * 1e6 for t in results_dict["qr"]]
+    # speedup = [torch / fused for torch, fused in zip(results_dict["torch"], results_dict["fused"])]
+    # speedup_f_qr = [qr / fused for qr, fused in zip(results_dict["qr"], results_dict["fused"])]
+
+    # # Create figure and axes
+    # fig, ax1 = plt.subplots(figsize=(10, 6))
+    # ax1.set_xscale("log", base=2)
+    # ax1.plot(n_values, fused_times_us, label="Fused Skinny GEMM + Quickreduce", marker='o')
+    # ax1.plot(n_values, torch_times_us, label="Skinny GEMM + PyTorch AllReduce", marker='s')
+    # ax1.plot(n_values, qr_times_us, label="Skinny GEMM + Quickreduce", marker='p')
+    # ax1.set_xlabel("N (8xNxN fp8 tensor)")
+    # ax1.set_ylabel("Latency (µs)")
+    # ax1.grid(True, which="both", linestyle="--", linewidth=0.5)
+
+    # # Secondary Y-axis for speedup
+    # ax2 = ax1.twinx()
+    # ax2.sharex(ax1)
+    # ax2.plot(n_values, speedup, label="Speedup (Torch / Fused)", color="black", linestyle="--", marker='^')
+    # ax2.plot(n_values, speedup_f_qr, label="Speedup (Quickreduce / Fused)", color="slategray", linestyle="--", marker='v')
+    # ax2.set_ylabel("Speedup (x)")
+    # ax2.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1fx'))
+
+    # # X-tick formatting
+    # ax1.set_xticks(n_values)
+    # ax1.set_xticklabels([str(m) for m in n_values])
+
+    # # Combine legends
+    # lines, labels = ax1.get_legend_handles_labels()
+    # lines2, labels2 = ax2.get_legend_handles_labels()
+    # ax1.legend(lines + lines2, labels + labels2, loc="upper center")
+
+    # plt.title("GEMM + allreduce configurations")
+    # plt.tight_layout()
+    # plt.savefig("benchmark_with_speedup_us.png", dpi=300)
+    
+    fused_times_us = [t * 1e6 for t in results_dict["fused"]]
     torch_times_us = [t * 1e6 for t in results_dict["torch"]]
-    speedup = [torch / custom for torch, custom in zip(results_dict["torch"], results_dict["custom"])]
+    qr_times_us = [t * 1e6 for t in results_dict["qr"]]
 
-    # Create figure and axes
-    fig, ax1 = plt.subplots(figsize=(10, 6))
+    # Compute speedups
+    speedup = [torch / fused for torch, fused in zip(results_dict["torch"], results_dict["fused"])]
+    speedup_f_qr = [qr / fused for qr, fused in zip(results_dict["qr"], results_dict["fused"])]
+
+    # Create stacked subplots with shared x-axis
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    # Latency plot (top)
     ax1.set_xscale("log", base=2)
-    ax1.plot(n_values, custom_times_us, label="Fused Skinny GEMM + QR", marker='o')
     ax1.plot(n_values, torch_times_us, label="Skinny GEMM + PyTorch AllReduce", marker='s')
-    ax1.set_xlabel("m (skinny dimension)")
-    ax1.set_ylabel("Time (µs)")
+    ax1.plot(n_values, qr_times_us, label="Skinny GEMM + Quickreduce", marker='p')
+    ax1.plot(n_values, fused_times_us, label="Fused Skinny GEMM + Quickreduce", marker='o')
+    ax1.set_ylabel("Latency (µs)")
+    ax1.set_title("GEMM + AllReduce Configurations")
     ax1.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax1.legend(loc="upper left")
 
-    # Secondary Y-axis for speedup
-    ax2 = ax1.twinx()
+    # Speedup plot (bottom)
+    ax2.set_xscale("log", base=2)
     ax2.plot(n_values, speedup, label="Speedup (Torch / Fused)", color="black", linestyle="--", marker='^')
+    ax2.plot(n_values, speedup_f_qr, label="Speedup (Quickreduce / Fused)", color="slategray", linestyle="--", marker='v')
+    ax2.set_xlabel("N (8xNxN fp8 tensor)")
     ax2.set_ylabel("Speedup (x)")
     ax2.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.1fx'))
+    ax2.grid(True, which="both", linestyle="--", linewidth=0.5)
+    ax2.legend(loc="upper left")
 
-    # X-tick formatting
-    ax1.set_xticks(n_values)
-    ax1.set_xticklabels([str(m) for m in n_values])
+    # Clean x-tick formatting
+    ax2.set_xticks(n_values)
+    ax2.set_xticklabels([str(m) for m in n_values])
 
-    # Combine legends
-    lines, labels = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
-    ax1.legend(lines + lines2, labels + labels2, loc="best")
-
-    plt.title("AllReduce GEMM Benchmark with Speedup")
     plt.tight_layout()
-    plt.savefig("benchmark_with_speedup_us.png", dpi=300)
+    plt.savefig("benchmark_stacked_axes.png", dpi=300)
 
 if __name__ == "__main__":
     main()
